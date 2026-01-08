@@ -206,25 +206,27 @@ def parse_pdf(pdf_path: Path) -> tuple[dict, pd.DataFrame]:
     # Clean up types for Excel
     if not df.empty:
         for col in ["posting_date", "transaction_date", "entry_date", "exit_date"]:
-            df[col] = df[col].apply(mmddyy_to_date)
+            # To Date
+            #df[col] = df[col].apply(mmddyy_to_date)
+
+            #Date to String
+            if col in df.columns:
+                df[col] = df[col].astype(str)
         for col in ["amount", "balance"]:
             df[col + "_num"] = df[col].apply(money_to_float)
 
     return metadata, df
 
-
-def parse_many(inputs: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    meta_rows = []
+#Transactions Only Tab
+def parse_many(inputs: list[Path]) -> pd.DataFrame:
     tx_frames = []
 
     for p in inputs:
-        meta, tx = parse_pdf(p)
-        meta_rows.append({"source_pdf": p.name, **meta})
+        _, tx = parse_pdf(p)
         tx_frames.append(tx)
 
-    meta_df = pd.DataFrame(meta_rows)
-    tx_df = pd.concat(tx_frames, ignore_index=True) if tx_frames else pd.DataFrame()
-    return meta_df, tx_df
+    return pd.concat(tx_frames, ignore_index=True) if tx_frames else pd.DataFrame()
+
 
 
 def collect_inputs(path: Path) -> list[Path]:
@@ -248,24 +250,31 @@ def main() -> None:
     out_path = Path(args.output).expanduser().resolve()
 
     inputs = collect_inputs(in_path)
-    meta_df, tx_df = parse_many(inputs)
 
+    # Parse PDFs -> one Transactions dataframe
+    tx_df = parse_many(inputs)
+
+    # Remove source_pdf column if present
+    if "source_pdf" in tx_df.columns:
+        tx_df = tx_df.drop(columns=["source_pdf"])
+
+    # Write ONLY the Transactions sheet
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        meta_df.to_excel(writer, sheet_name="Statements", index=False)
         tx_df.to_excel(writer, sheet_name="Transactions", index=False)
 
-        # Make sheets readable
-        for sheet_name in ["Statements", "Transactions"]:
-            ws = writer.book[sheet_name]
-            ws.freeze_panes = "A2"
-            for col in ws.columns:
-                max_len = 0
-                col_letter = col[0].column_letter
-                for cell in col[:2000]:
-                    if cell.value is None:
-                        continue
-                    max_len = max(max_len, len(str(cell.value)))
-                ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 45)
+        # Basic formatting
+        ws = writer.book["Transactions"]
+        ws.freeze_panes = "A2"
+
+        # Auto-size columns (simple)
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col[:2000]:
+                if cell.value is None:
+                    continue
+                max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 45)
 
     print(f"Saved Excel: {out_path}")
 
