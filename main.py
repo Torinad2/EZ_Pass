@@ -97,13 +97,13 @@ def main() -> None:
     # Input Collection                                                      *
     #   Determine whether input is a single PDF or a directory of PDFs.      *
     # ***********************************************************************
-    pdf_files = collect_inputs(input_path)
+    pdf_files = collect_inputs_func(input_path)
 
     # ***********************************************************************
     # PDF Parsing                                                           *
     #   Parse all PDFs and combine into one DataFrame.                       *
     # ***********************************************************************
-    tx_df = parse_many(pdf_files)
+    tx_df = parse_many_func(pdf_files)
 
     # ***********************************************************************
     # Excel Export                                                          *
@@ -127,46 +127,84 @@ def main() -> None:
     print(f"Saved Excel: {output_path}")
 
 
-
-
 # -------------------------------------------------
-# Convert money string like "$1.74" to float 1.74
+# Parse one file or many files
 # -------------------------------------------------
-def money_to_float(value: str) -> Optional[float]:
+def parse_many_func(inputs: list[Path]) -> pd.DataFrame:
     """
-        /**************************************************************************
-         * money_to_float(value)                                                 *
-         * ---------------------------------------------------------------------- *
-         * Converts a money string from the PDF into a numeric float.             *
-         *                                                                        *
-         * Examples                                                               *
-         *   "$1.74"   ->  1.74                                                   *
-         *   "-$6.94"  -> -6.94                                                   *
-         *   "$1,234.50" -> 1234.50                                               *
-         *                                                                        *
-         * Returns                                                                *
-         *   float value if conversion succeeds, otherwise None.                  *
-         **************************************************************************/
-        """
-    if not value:
-        return None
+    /**************************************************************************
+     * parse_many(inputs)                                                    *
+     * ---------------------------------------------------------------------- *
+     * Parses a list of PDF files and concatenates all results into one       *
+     * DataFrame.                                                            *
+     *                                                                        *
+     * Behavior                                                              *
+     *   - Each PDF is parsed independently via parse_pdf().                  *
+     *   - Results are concatenated with ignore_index=True.                   *
+     *   - If no PDFs are provided, returns an empty DataFrame.               *
+     **************************************************************************/
+    """
+    frames = []
 
-    value = value.strip()
-    negative = value.startswith("-")
+    for pdf in inputs:
+        frames.append(parse_pdf_func(pdf))
 
-    value = value.replace("$", "").replace(",", "").replace("-", "")
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    try:
-        amount = float(value)
-        return -amount if negative else amount
-    except ValueError:
-        return None
+# -------------------------------------------------
+# Parse a single PDF file
+# -------------------------------------------------
+def parse_pdf_func(pdf_path: Path) -> pd.DataFrame:
+    """
+    /**************************************************************************
+     * parse_pdf(pdf_path)                                                   *
+     * ---------------------------------------------------------------------- *
+     * Reads one PDF file and extracts transaction rows from all pages.       *
+     *                                                                        *
+     * Steps                                                                  *
+     *   1) Open PDF with pdfplumber.                                         *
+     *   2) For each page: extract text.                                      *
+     *   3) Filter page text down to likely transaction lines.                *
+     *   4) Parse each line into a normalized row dict.                       *
+     *   5) Build a DataFrame from all rows.                                  *
+     *   6) Add numeric helper columns for amount and balance.                *
+     *                                                                        *
+     * Returns                                                                *
+     *   pandas DataFrame containing parsed rows for this PDF.                *
+     **************************************************************************/
+    """
+    rows = []
 
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            for line in iter_transaction_lines_func(text):
+                row = parse_transaction_line_func(line)
+                if row:
+                    rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # ***********************************************************************
+    # Keep date columns as strings (MM/DD/YY); ensure missing stays None.   *
+    # ***********************************************************************
+    for col in ["posting_date", "transaction_date", "entry_date", "exit_date"]:
+        if col in df.columns:
+            df[col] = df[col].where(df[col].notna(), None)
+
+    # ***********************************************************************
+    # Numeric helper columns for calculations / sorting / filtering.        *
+    # ***********************************************************************
+    if not df.empty:
+        df["amount_num"] = df["amount"].apply(money_to_float_func)
+        df["balance_num"] = df["balance"].apply(money_to_float_func)
+
+    return df
 
 # -------------------------------------------------
 # Extract only the transaction lines from a page
 # -------------------------------------------------
-def iter_transaction_lines(page_text: str) -> Iterable[str]:
+def iter_transaction_lines_func(page_text: str) -> Iterable[str]:
     """
     /**************************************************************************
      * iter_transaction_lines(page_text)                                      *
@@ -212,11 +250,10 @@ def iter_transaction_lines(page_text: str) -> Iterable[str]:
         if DATE_RE.match(toks[0]):
             yield line
 
-
 # -------------------------------------------------
 # Parse one transaction line into structured data
 # -------------------------------------------------
-def parse_transaction_line(line: str) -> Optional[dict]:
+def parse_transaction_line_func(line: str) -> Optional[dict]:
     """
     /**************************************************************************
      * parse_transaction_line(line)                                           *
@@ -392,88 +429,43 @@ def parse_transaction_line(line: str) -> Optional[dict]:
 
     return None
 
-
-
 # -------------------------------------------------
-# Parse a single PDF file
+# Convert money string like "$1.74" to float 1.74
 # -------------------------------------------------
-def parse_pdf(pdf_path: Path) -> pd.DataFrame:
+def money_to_float_func(value: str) -> Optional[float]:
     """
-    /**************************************************************************
-     * parse_pdf(pdf_path)                                                   *
-     * ---------------------------------------------------------------------- *
-     * Reads one PDF file and extracts transaction rows from all pages.       *
-     *                                                                        *
-     * Steps                                                                  *
-     *   1) Open PDF with pdfplumber.                                         *
-     *   2) For each page: extract text.                                      *
-     *   3) Filter page text down to likely transaction lines.                *
-     *   4) Parse each line into a normalized row dict.                       *
-     *   5) Build a DataFrame from all rows.                                  *
-     *   6) Add numeric helper columns for amount and balance.                *
-     *                                                                        *
-     * Returns                                                                *
-     *   pandas DataFrame containing parsed rows for this PDF.                *
-     **************************************************************************/
-    """
-    rows = []
+        /**************************************************************************
+         * money_to_float(value)                                                 *
+         * ---------------------------------------------------------------------- *
+         * Converts a money string from the PDF into a numeric float.             *
+         *                                                                        *
+         * Examples                                                               *
+         *   "$1.74"   ->  1.74                                                   *
+         *   "-$6.94"  -> -6.94                                                   *
+         *   "$1,234.50" -> 1234.50                                               *
+         *                                                                        *
+         * Returns                                                                *
+         *   float value if conversion succeeds, otherwise None.                  *
+         **************************************************************************/
+        """
+    if not value:
+        return None
 
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            for line in iter_transaction_lines(text):
-                row = parse_transaction_line(line)
-                if row:
-                    rows.append(row)
+    value = value.strip()
+    negative = value.startswith("-")
 
-    df = pd.DataFrame(rows)
+    value = value.replace("$", "").replace(",", "").replace("-", "")
 
-    # ***********************************************************************
-    # Keep date columns as strings (MM/DD/YY); ensure missing stays None.   *
-    # ***********************************************************************
-    for col in ["posting_date", "transaction_date", "entry_date", "exit_date"]:
-        if col in df.columns:
-            df[col] = df[col].where(df[col].notna(), None)
-
-    # ***********************************************************************
-    # Numeric helper columns for calculations / sorting / filtering.        *
-    # ***********************************************************************
-    if not df.empty:
-        df["amount_num"] = df["amount"].apply(money_to_float)
-        df["balance_num"] = df["balance"].apply(money_to_float)
-
-    return df
-
-
-# -------------------------------------------------
-# Parse one file or many files
-# -------------------------------------------------
-def parse_many(inputs: list[Path]) -> pd.DataFrame:
-    """
-    /**************************************************************************
-     * parse_many(inputs)                                                    *
-     * ---------------------------------------------------------------------- *
-     * Parses a list of PDF files and concatenates all results into one       *
-     * DataFrame.                                                            *
-     *                                                                        *
-     * Behavior                                                              *
-     *   - Each PDF is parsed independently via parse_pdf().                  *
-     *   - Results are concatenated with ignore_index=True.                   *
-     *   - If no PDFs are provided, returns an empty DataFrame.               *
-     **************************************************************************/
-    """
-    frames = []
-
-    for pdf in inputs:
-        frames.append(parse_pdf(pdf))
-
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
+    try:
+        amount = float(value)
+        return -amount if negative else amount
+    except ValueError:
+        return None
 
 # -------------------------------------------------
 # Collect PDF files from input
 # -------------------------------------------------
-def collect_inputs(path: Path) -> list[Path]:
+def collect_inputs_func(path: Path) -> list[Path]:
     """
     /**************************************************************************
      * collect_inputs(path)                                                  *
